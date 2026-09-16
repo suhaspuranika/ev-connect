@@ -3,15 +3,75 @@ import { renderToStaticMarkup } from "react-dom/server";
 import mapboxgl from "mapbox-gl";
 import { MAPBOX_ACCESS_TOKEN } from "../config.js";
 import { summarizeEvOptions } from "../utils.js";
-import { MdBolt, MdMyLocation, FaPlane, FaPause } from "../icons.js";
+import {
+  MdBolt,
+  MdMyLocation,
+  FaPlane,
+  FaPause,
+  MdDirectionsCar,
+} from "../icons.js";
 
 mapboxgl.accessToken = MAPBOX_ACCESS_TOKEN;
 
-// Pre-render the marker glyph (a bolt) to an SVG string for use in DOM markers.
+// Pre-render marker glyphs to SVG strings for use in DOM markers.
 const BOLT_SVG = renderToStaticMarkup(<MdBolt />);
+const CAR_SVG = renderToStaticMarkup(<MdDirectionsCar />);
 
 // Autopilot orbit speed, in degrees of bearing change per second.
 const AUTOPILOT_DEG_PER_SEC = 6;
+
+// --- Lightweight geo helpers for animating a car along the route line ---
+
+function haversineMeters([lng1, lat1], [lng2, lat2]) {
+  const R = 6371000;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+function bearingDeg([lng1, lat1], [lng2, lat2]) {
+  const toRad = (d) => (d * Math.PI) / 180;
+  const toDeg = (r) => (r * 180) / Math.PI;
+  const y = Math.sin(toRad(lng2 - lng1)) * Math.cos(toRad(lat2));
+  const x =
+    Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) -
+    Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(toRad(lng2 - lng1));
+  return (toDeg(Math.atan2(y, x)) + 360) % 360;
+}
+
+/**
+ * Build a cumulative-distance table for a set of [lng,lat] coordinates so we
+ * can look up a point + heading at a given fraction (0..1) of the route.
+ */
+function buildRouteSampler(coords) {
+  const seg = [];
+  let total = 0;
+  for (let i = 1; i < coords.length; i++) {
+    const d = haversineMeters(coords[i - 1], coords[i]);
+    seg.push({ from: coords[i - 1], to: coords[i], d, acc: total });
+    total += d;
+  }
+  return {
+    total,
+    at(fraction) {
+      const target = fraction * total;
+      for (const s of seg) {
+        if (target <= s.acc + s.d || s === seg[seg.length - 1]) {
+          const t = s.d === 0 ? 0 : (target - s.acc) / s.d;
+          const lng = s.from[0] + (s.to[0] - s.from[0]) * t;
+          const lat = s.from[1] + (s.to[1] - s.from[1]) * t;
+          return { point: [lng, lat], bearing: bearingDeg(s.from, s.to) };
+        }
+      }
+      const last = coords[coords.length - 1];
+      return { point: last, bearing: 0 };
+    },
+  };
+}
 
 /**
  * 3D Mapbox map showing the user's location and EV charging stations.
@@ -39,6 +99,10 @@ export default function MapView({
   const autopilotRef = useRef(false);
   const rafRef = useRef(null);
   const lastTsRef = useRef(0);
+
+  // Car-along-route animation refs
+  const carMarkerRef = useRef(null);
+  const carRafRef = useRef(null);
 
   // Initialize the map once.
   useEffect(() => {
@@ -285,6 +349,52 @@ export default function MapView({
     marker?.togglePopup();
   }, [selectedId, stations]);
 
+  // Animate a car marker traveling along the route geometry.
+  const animateCar = useCallback((map, coords) => {
+    if (carRafRef.current) cancelAnimationFrame(carRafRef.current);
+    if (carMarkerRef.current) {
+      carMarkerRef.current.remove();
+      carMarkerRef.current = null;
+    }
+    if (!coords || coords.length < 2) return;
+
+    const sampler = buildRouteSampler(coords);
+
+    const el = document.createElement("div");
+    el.className = "car-marker";
+    el.innerHTML = `<div class="car-shadow"></div><div class="car-body">${CAR_SVG}</div>`;
+
+    const marker = new mapboxgl.Marker({ element: el, rotationAlignment: "map" })
+      .setLngLat(coords[0])
+      .addTo(map);
+    carMarkerRef.current = marker;
+
+    // Duration scales with route length (clamped) for a natural feel.
+    const duration = Math.min(9000, Math.max(3500, sampler.total * 4));
+    let start = null;
+
+    const loop = (ts) => {
+      if (start == null) start = ts;
+      const elapsed = ts - start;
+      const frac = Math.min(1, elapsed / duration);
+      const { point, bearing } = sampler.at(frac);
+      marker.setLngLat(point);
+      const body = el.querySelector(".car-body");
+      if (body) body.style.transform = `rotate(${bearing}deg)`;
+
+      if (frac < 1) {
+        carRafRef.current = requestAnimationFrame(loop);
+      } else {
+        // Small pause, then loop the drive again while directions are shown.
+        carRafRef.current = requestAnimationFrame((t2) => {
+          start = t2;
+          carRafRef.current = requestAnimationFrame(loop);
+        });
+      }
+    };
+    carRafRef.current = requestAnimationFrame(loop);
+  }, []);
+
   // Draw / clear the route line when the route prop changes.
   useEffect(() => {
     const map = mapRef.current;
@@ -296,6 +406,11 @@ export default function MapView({
 
       if (!route?.geometry) {
         src.setData({ type: "FeatureCollection", features: [] });
+        if (carRafRef.current) cancelAnimationFrame(carRafRef.current);
+        if (carMarkerRef.current) {
+          carMarkerRef.current.remove();
+          carMarkerRef.current = null;
+        }
         return;
       }
 
@@ -316,10 +431,12 @@ export default function MapView({
           new mapboxgl.LngLatBounds(coords[0], coords[0])
         );
         map.fitBounds(bounds, {
-          padding: { top: 100, bottom: 220, left: 60, right: 60 },
-          pitch: 55,
+          padding: { top: 100, bottom: 260, left: 50, right: 50 },
+          pitch: 60,
           duration: 1200,
         });
+        // Kick off the animated 3D car once the camera settles.
+        map.once("moveend", () => animateCar(map, coords));
       }
     };
 
@@ -328,7 +445,7 @@ export default function MapView({
     } else {
       map.once("idle", applyRoute);
     }
-  }, [route]);
+  }, [route, animateCar]);
 
   return (
     <div className="map-wrap">

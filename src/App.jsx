@@ -4,6 +4,7 @@ import StationList from "./components/StationList.jsx";
 import FilterBar from "./components/FilterBar.jsx";
 import Splash from "./components/Splash.jsx";
 import { useGeolocation } from "./hooks/useGeolocation.js";
+import { useBottomSheet } from "./hooks/useBottomSheet.js";
 import { searchNearbyChargingStations } from "./services/placesService.js";
 import { getRoute, externalDirectionsUrl } from "./services/directionsService.js";
 import { DEFAULT_SEARCH_RADIUS } from "./config.js";
@@ -28,7 +29,9 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [apiError, setApiError] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
-  const [panelOpen, setPanelOpen] = useState(true);
+
+  // Bottom sheet: 0=full, 1=half, 2=collapsed. Start at half.
+  const sheet = useBottomSheet({ snapPoints: [0.08, 0.45, 0.9], initial: 1 });
 
   // Filters
   const [network, setNetwork] = useState("all");
@@ -121,7 +124,8 @@ export default function App() {
     setSelectedId(id);
     setRoute(null);
     setRouteError(null);
-    if (window.innerWidth < 720) setPanelOpen(false);
+    // Bring the sheet to the half snap so the selected card + actions are visible.
+    if (sheet.snapIndex === 2) sheet.setSnapIndex(1);
   };
 
   const handleGetDirections = useCallback(
@@ -198,21 +202,36 @@ export default function App() {
       {geoError && <div className="banner warn">{geoError}</div>}
       {apiError && <div className="banner error">{apiError}</div>}
 
-      {/* Bottom / side panel */}
-      <section className={`panel${panelOpen ? " open" : ""}`}>
-        <button className="panel-toggle" onClick={() => setPanelOpen((v) => !v)}>
+      {/* Bottom sheet (mobile) / side drawer (desktop) */}
+      <section
+        className={`sheet${sheet.dragging ? " dragging" : ""}`}
+        style={{ transform: `translateY(${sheet.translateY}px)` }}
+      >
+        <div
+          className="sheet-header"
+          {...sheet.handlers}
+          onClick={() =>
+            sheet.setSnapIndex(sheet.snapIndex === 0 ? 1 : 0)
+          }
+        >
           <span className="grabber" />
-          <span className="panel-title">
-            {loading
-              ? "Searching nearby..."
-              : `${filteredStations.length} charging ${
-                  filteredStations.length === 1 ? "station" : "stations"
-                } nearby`}
-          </span>
-          <span className="panel-chevron">
-            {panelOpen ? <MdKeyboardArrowDown /> : <MdKeyboardArrowUp />}
-          </span>
-        </button>
+          <div className="sheet-title-row">
+            <span className="panel-title">
+              {loading
+                ? "Searching nearby…"
+                : `${filteredStations.length} ${
+                    filteredStations.length === 1 ? "station" : "stations"
+                  } nearby`}
+            </span>
+            <span className="panel-chevron">
+              {sheet.snapIndex === 0 ? (
+                <MdKeyboardArrowDown />
+              ) : (
+                <MdKeyboardArrowUp />
+              )}
+            </span>
+          </div>
+        </div>
 
         {!loading && stations.length > 0 && (
           <FilterBar
@@ -229,7 +248,10 @@ export default function App() {
 
         <div className="panel-content">
           {loading && stations.length === 0 ? (
-            <div className="list-empty">Loading charging stations...</div>
+            <div className="list-empty">
+              <span className="spinner" />
+              <p>Loading charging stations…</p>
+            </div>
           ) : (
             <StationList
               stations={filteredStations}

@@ -57,7 +57,7 @@ export default function StationList({
 
   return (
     <ul className="station-list">
-      {withDistance.map(({ place, dist }) => {
+      {withDistance.map(({ place, dist }, index) => {
         const ev = summarizeEvOptions(place);
         const active = place.id === selectedId;
         const open = isOpenNow(place);
@@ -67,7 +67,11 @@ export default function StationList({
         const closedTemp = status === "CLOSED_TEMPORARILY";
 
         return (
-          <li key={place.id} className={`station-item${active ? " active" : ""}`}>
+          <li
+            key={place.id}
+            className={`station-item${active ? " active" : ""}`}
+            style={{ "--i": Math.min(index, 12) }}
+          >
             <div className="station-row" onClick={() => onSelect(place.id)}>
               <div className="station-icon">
                 <MdEvStation />
