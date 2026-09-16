@@ -1,0 +1,23 @@
+{
+  "name": "ev-charger-finder",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "A PWA to find EV charging options near you, plotted on a 3D Mapbox map",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "mapbox-gl": "^3.7.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-icons": "^5.7.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.2",
+    "vite": "^5.4.8",
+    "vite-plugin-pwa": "^0.20.5"
+  }
+}
